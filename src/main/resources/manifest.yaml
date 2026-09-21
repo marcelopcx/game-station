@@ -1,0 +1,9 @@
+id: test-pattern
+version: "1.0.0"
+kind: test-pattern
+needs:
+  display: false
+  audio: false
+  gamepad: 1
+  keyboard: true
+  mouse: true

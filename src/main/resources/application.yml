@@ -1,0 +1,20 @@
+server:
+  port: ${STATION_HTTP_PORT:8090}
+
+station:
+  id: ${STATION_ID:spark-1}
+  display: ${STATION_DISPLAY::99}
+  size: ${STATION_SIZE:1280x720}
+  fps: ${STATION_FPS:30}
+  library-root: ${LIBRARY_ROOT:/opt/station-library}
+  cache-root: ${CACHE_ROOT:/tmp/airtek-cache}
+  idle-timeout-s: ${IDLE_TIMEOUT_S:300}
+  game-manifest: ${GAME_MANIFEST:}
+  cors-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  ice-servers: ${ICE_SERVERS:stun:stun.l.google.com:19302}
+  ice-host-ips: ${ICE_HOST_IPS:}
+  ice-host-policy: ${ICE_HOST_POLICY:all}
+
+logging:
+  level:
+    com.airtek.station: INFO
