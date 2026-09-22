@@ -35,7 +35,8 @@ public final class UinputPad {
     private static final int O_RDWR = 2;
     private static final int UI_SET_EVBIT = 0x40045564;
     private static final int UI_SET_KEYBIT = 0x40045565;
-    private static final int UI_SET_ABSBIT = 0x40045566;
+    /** {@code _IOW('U', 103, int)}. 0x40045566 es {@code UI_SET_RELBIT}. */
+    private static final int UI_SET_ABSBIT = 0x40045567;
     private static final int UI_DEV_CREATE = 0x5501;
     private static final int UI_DEV_DESTROY = 0x5502;
     private static final int EV_SYN = 0;

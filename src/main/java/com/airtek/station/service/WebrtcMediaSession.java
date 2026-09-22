@@ -544,12 +544,14 @@ public class WebrtcMediaSession implements MediaSession {
             pump = null;
         }
         if (videoSource != null) {
-            videoSource.dispose();
+            CustomVideoSource source = videoSource;
             videoSource = null;
+            disposeNative(source::dispose);
         }
         if (factory != null) {
-            factory.dispose();
+            PeerConnectionFactory current = factory;
             factory = null;
+            disposeNative(current::dispose);
         }
     }
 
@@ -563,13 +565,23 @@ public class WebrtcMediaSession implements MediaSession {
     private void closePeerLocked() {
         remoteReady = false;
         pendingRemote.clear();
-        if (videoTrack != null) {
-            videoTrack.dispose();
-            videoTrack = null;
+        VideoTrack track = videoTrack;
+        RTCPeerConnection current = peer;
+        videoTrack = null;
+        peer = null;
+        if (current != null) {
+            disposeNative(current::close);
         }
-        if (peer != null) {
-            peer.close();
-            peer = null;
+        if (track != null) {
+            disposeNative(track::dispose);
+        }
+    }
+
+    private static void disposeNative(Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable ex) {
+            log.debug("webrtc dispose {}", ex.toString());
         }
     }
 

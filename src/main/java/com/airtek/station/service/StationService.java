@@ -185,7 +185,11 @@ public class StationService {
     public void stop() {
         cancel(idleTask);
         cancel(failedTask);
-        media.stop();
+        try {
+            media.stop();
+        } catch (RuntimeException ex) {
+            log.error("media stop failed", ex);
+        }
         lock.lock();
         try {
             state = StationState.IDLE;
