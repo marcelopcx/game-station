@@ -207,6 +207,9 @@ public class InputSink {
                 loggedMouseMotion = true;
                 log.info("input mouse motion look dx={} dy={}", lookX, lookY);
             }
+        } else if (mouse && !loggedMouseMotion && (relX != 0 || relY != 0)) {
+            loggedMouseMotion = true;
+            log.info("input mouse motion rel dx={} dy={}", relX, relY);
         }
         lock.lock();
         try {
