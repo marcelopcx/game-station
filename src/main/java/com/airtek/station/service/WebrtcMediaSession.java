@@ -18,7 +18,10 @@ import dev.onvoid.webrtc.RTCIceServer;
 import dev.onvoid.webrtc.RTCPeerConnection;
 import dev.onvoid.webrtc.RTCPeerConnectionIceErrorEvent;
 import dev.onvoid.webrtc.RTCPeerConnectionState;
+import dev.onvoid.webrtc.RTCRtpEncodingParameters;
 import dev.onvoid.webrtc.RTCRtpReceiver;
+import dev.onvoid.webrtc.RTCRtpSendParameters;
+import dev.onvoid.webrtc.RTCRtpSender;
 import dev.onvoid.webrtc.RTCRtpTransceiver;
 import dev.onvoid.webrtc.RTCSdpType;
 import dev.onvoid.webrtc.RTCSessionDescription;
@@ -26,6 +29,10 @@ import dev.onvoid.webrtc.RTCSignalingState;
 import dev.onvoid.webrtc.SetSessionDescriptionObserver;
 import dev.onvoid.webrtc.media.MediaStream;
 import dev.onvoid.webrtc.media.MediaStreamTrack;
+import dev.onvoid.webrtc.media.audio.AudioDeviceModule;
+import dev.onvoid.webrtc.media.audio.AudioLayer;
+import dev.onvoid.webrtc.media.audio.AudioTrack;
+import dev.onvoid.webrtc.media.audio.CustomAudioSource;
 import dev.onvoid.webrtc.media.video.CustomVideoSource;
 import dev.onvoid.webrtc.media.video.NativeI420Buffer;
 import dev.onvoid.webrtc.media.video.VideoFrame;
@@ -41,10 +48,14 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -62,8 +73,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * manifiesto pide display y {@code ffmpeg} está en el PATH, se captura
  * {@code x11grab} de {@code station.display}. Si no, un hilo pinta barras
  * SMPTE ({@code encoder=smpte}) para el camino {@code test-pattern}.
- * libwebrtc elige el codec del offer (H.264 o VP8); no hay NVENC en este
- * proceso.
+ * Video: ffmpeg x11grab → I420 → OpenH264 en libwebrtc (ver {@code station.video-encoder}).
  *
  * <p>El DataChannel lo crea el browser (label {@code input}, unordered,
  * {@code maxRetransmits=0}). {@code onDataChannel} registra el observer que
@@ -80,6 +90,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class WebrtcMediaSession implements MediaSession {
 
     private static final Logger log = LoggerFactory.getLogger(WebrtcMediaSession.class);
+    private static final int AUDIO_RATE = 48_000;
+    /** 10 ms. WebRTC entrega el audio en bloques de ese tamaño. */
+    private static final int AUDIO_SAMPLES = 480;
+    private static final long AUDIO_FRAME_NS = 10_000_000L;
+    private static final int AUDIO_CHANNELS = 2;
+    private static final int AUDIO_BYTES = AUDIO_SAMPLES * 2 * AUDIO_CHANNELS;
 
     private final StationProperties settings;
     private final GameRuntime runtime;
@@ -88,18 +104,28 @@ public class WebrtcMediaSession implements MediaSession {
     private final Object lock = new Object();
 
     private PeerConnectionFactory factory;
+    private AudioDeviceModule audioDevices;
     private RTCPeerConnection peer;
     private CustomVideoSource videoSource;
     private VideoTrack videoTrack;
+    private CustomAudioSource audioSource;
+    private AudioTrack audioTrack;
     private Thread pump;
+    private Thread audioPump;
     private Process ffmpeg;
+    private Process audioProc;
     private final AtomicBoolean pumping = new AtomicBoolean();
     private WebSocketSession socket;
     private volatile boolean remoteReady;
+    private boolean answerSent;
     private final List<RTCIceCandidate> pendingRemote = new ArrayList<>();
+    private final List<RTCIceCandidate> pendingLocal = new ArrayList<>();
     private volatile String encoder;
     private int tick;
-
+    private long videoTimestampNs;
+    /** Un solo hilo: XTEST/uinput no son thread-safe y el orden importa. */
+    private final ExecutorService inputExecutor =
+            Executors.newSingleThreadExecutor(Thread.ofPlatform().name("input", 0).factory());
     public WebrtcMediaSession(StationProperties settings, GameRuntime runtime, InputSink input, ObjectMapper json) {
         this.settings = settings;
         this.runtime = runtime;
@@ -113,11 +139,17 @@ public class WebrtcMediaSession implements MediaSession {
         stopMedia();
         runtime.start(gameId);
         input.open(runtime.active());
-        factory = new PeerConnectionFactory();
+        audioDevices = new AudioDeviceModule(AudioLayer.kDummyAudio);
+        factory = new PeerConnectionFactory(factoryFieldTrials(), audioDevices);
         videoSource = new CustomVideoSource();
+        audioSource = new CustomAudioSource();
         pumping.set(true);
+        videoTimestampNs = 0;
+        if (runtime.capturesDisplay()) {
+            startAudio();
+        }
         if (runtime.capturesDisplay() && startFfmpeg()) {
-            encoder = "h264";
+            encoder = "openh264";
             pump = Thread.ofPlatform().name("capture").start(this::readFfmpeg);
         } else {
             encoder = "smpte";
@@ -186,6 +218,10 @@ public class WebrtcMediaSession implements MediaSession {
             }
         } catch (Exception ex) {
             log.warn("signaling {}", ex.toString());
+            try {
+                send(session, Map.of("type", "ERROR", "code", "SIGNALING", "message", ex.getMessage()));
+            } catch (IOException ignored) {
+            }
         }
     }
 
@@ -209,6 +245,11 @@ public class WebrtcMediaSession implements MediaSession {
             peer = factory.createPeerConnection(configuration(), observer());
             videoTrack = factory.createVideoTrack("game", videoSource);
             peer.addTrack(videoTrack, List.of("game"));
+            if (audioSource != null && audioProc != null) {
+                audioTrack = factory.createAudioTrack("game-audio", audioSource);
+                peer.addTrack(audioTrack, List.of("game"));
+                log.info("audio track=opus source=pulse");
+            }
         }
         RTCSessionDescription offer = new RTCSessionDescription(RTCSdpType.OFFER, sdp);
         awaitSet(offer, true);
@@ -223,6 +264,8 @@ public class WebrtcMediaSession implements MediaSession {
         awaitSet(answer, false);
         send(socket, Map.of("type", "ANSWER", "sdp", answer.sdp));
         log.info("answer sent bytes={}", answer.sdp.length());
+        flushLocalIce();
+        tuneVideoSender();
     }
 
     private void addRemoteIce(RTCIceCandidate candidate) {
@@ -252,16 +295,7 @@ public class WebrtcMediaSession implements MediaSession {
                 if (candidate == null || candidate.sdp == null || !allowHost(candidate.sdp)) {
                     return;
                 }
-                try {
-                    send(socket, Map.of(
-                            "type", "ICE",
-                            "candidate", candidate.sdp,
-                            "sdpMid", candidate.sdpMid == null ? "0" : candidate.sdpMid,
-                            "sdpMLineIndex", candidate.sdpMLineIndex
-                    ));
-                } catch (IOException ex) {
-                    log.debug("ice send {}", ex.toString());
-                }
+                emitIce(candidate);
             }
 
             @Override
@@ -287,7 +321,7 @@ public class WebrtcMediaSession implements MediaSession {
                         ByteBuffer data = buffer.data;
                         byte[] bytes = new byte[data.remaining()];
                         data.get(bytes);
-                        input.handle(bytes);
+                        inputExecutor.execute(() -> input.handle(bytes));
                     }
                 });
             }
@@ -295,6 +329,9 @@ public class WebrtcMediaSession implements MediaSession {
             @Override
             public void onConnectionChange(RTCPeerConnectionState state) {
                 log.info("connectionstate={}", state);
+                if (state == RTCPeerConnectionState.CONNECTED) {
+                    tuneVideoSender();
+                }
             }
 
             @Override
@@ -346,6 +383,58 @@ public class WebrtcMediaSession implements MediaSession {
             public void onRenegotiationNeeded() {
             }
         };
+    }
+
+    private void emitIce(RTCIceCandidate candidate) {
+        synchronized (lock) {
+            if (!answerSent) {
+                pendingLocal.add(candidate);
+                return;
+            }
+        }
+        sendIce(candidate);
+    }
+
+    private void flushLocalIce() {
+        List<RTCIceCandidate> batch;
+        synchronized (lock) {
+            answerSent = true;
+            batch = new ArrayList<>(pendingLocal);
+            pendingLocal.clear();
+        }
+        for (RTCIceCandidate candidate : batch) {
+            sendIce(candidate);
+        }
+    }
+
+    private void sendIce(RTCIceCandidate candidate) {
+        String line = browserCandidate(candidate.sdp);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "ICE");
+        payload.put("candidate", line);
+        if (candidate.sdpMid != null && !candidate.sdpMid.isBlank()) {
+            payload.put("sdpMid", candidate.sdpMid);
+        }
+        if (candidate.sdpMLineIndex >= 0) {
+            payload.put("sdpMLineIndex", candidate.sdpMLineIndex);
+        }
+        log.info("ice out mid={} index={} line={}", candidate.sdpMid, candidate.sdpMLineIndex, line);
+        try {
+            send(socket, payload);
+        } catch (IOException ex) {
+            log.debug("ice send {}", ex.toString());
+        }
+    }
+
+    private static String browserCandidate(String sdp) {
+        String line = sdp == null ? "" : sdp.trim();
+        if (line.startsWith("a=")) {
+            line = line.substring(2).trim();
+        }
+        if (!line.startsWith("candidate:")) {
+            line = "candidate:" + line;
+        }
+        return line;
     }
 
     private boolean allowHost(String line) {
@@ -415,14 +504,26 @@ public class WebrtcMediaSession implements MediaSession {
         return done.get(8, TimeUnit.SECONDS);
     }
 
+    private static Map<String, String> factoryFieldTrials() {
+        return Map.of(
+                "WebRTC-VideoRateControl", "webrtc:std",
+                "WebRTC-LowLatencyRenderer", "Enabled"
+        );
+    }
+
     private boolean startFfmpeg() {
         List<String> cmd = List.of(
-                "ffmpeg", "-loglevel", "error",
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-probesize", "32", "-analyzeduration", "0",
+                "-fflags", "nobuffer", "-flags", "low_delay",
                 "-f", "x11grab", "-draw_mouse", "0",
+                "-thread_queue_size", "2",
                 "-framerate", Integer.toString(settings.fpsInt()),
                 "-video_size", settings.width() + "x" + settings.height(),
                 "-i", settings.getDisplay(),
-                "-f", "rawvideo", "-pix_fmt", "yuv420p", "-an", "pipe:1"
+                "-an",
+                "-f", "rawvideo", "-pix_fmt", "yuv420p",
+                "pipe:1"
         );
         try {
             ProcessBuilder builder = new ProcessBuilder(cmd);
@@ -437,22 +538,183 @@ public class WebrtcMediaSession implements MediaSession {
         }
     }
 
-    private void readFfmpeg() {
-        int width = settings.width();
-        int height = settings.height();
-        int size = width * height * 3 / 2;
-        byte[] frame = new byte[size];
-        try (InputStream in = ffmpeg.getInputStream()) {
+    private void startAudio() {
+        String device = System.getenv().getOrDefault("STATION_PULSE_SOURCE", "game.monitor");
+        String pulse = System.getenv().getOrDefault("PULSE_SERVER", "unix:/tmp/pulse/native");
+        List<List<String>> commands = List.of(
+                List.of(
+                        "parec", "--raw", "--format=s16le",
+                        "--rate=" + AUDIO_RATE, "--channels=" + AUDIO_CHANNELS,
+                        "--device=" + device, "--latency-msec=5"
+                ),
+                List.of(
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-f", "pulse", "-i", device,
+                        "-ac", Integer.toString(AUDIO_CHANNELS),
+                        "-ar", Integer.toString(AUDIO_RATE),
+                        "-f", "s16le", "pipe:1"
+                )
+        );
+        for (List<String> cmd : commands) {
+            try {
+                ProcessBuilder builder = new ProcessBuilder(cmd);
+                builder.environment().put("PULSE_SERVER", pulse);
+                builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+                Process proc = builder.start();
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                }
+                if (!proc.isAlive()) {
+                    log.warn("audio {} exited {}", cmd.get(0), proc.exitValue());
+                    proc.destroyForcibly();
+                    continue;
+                }
+                audioProc = proc;
+                audioPump = Thread.ofPlatform().name("audio").start(this::readAudio);
+                log.info("audio source=pulse device={} via={}", device, cmd.get(0));
+                return;
+            } catch (IOException ex) {
+                log.warn("audio {} failed: {}", cmd.get(0), ex.toString());
+                audioProc = null;
+            }
+        }
+    }
+
+    private void readAudio() {
+        Process proc = audioProc;
+        if (proc == null) {
+            return;
+        }
+        byte[] frame = new byte[AUDIO_BYTES];
+        boolean heard = false;
+        long next = System.nanoTime();
+        try (InputStream in = proc.getInputStream()) {
             while (pumping.get()) {
                 if (!readFully(in, frame)) {
                     break;
                 }
-                pushI420(frame, width, height);
+                long wait = next - System.nanoTime();
+                if (wait > 0) {
+                    LockSupport.parkNanos(wait);
+                }
+                next += AUDIO_FRAME_NS;
+                if (next < System.nanoTime() - 5 * AUDIO_FRAME_NS) {
+                    next = System.nanoTime();
+                }
+                if (!heard) {
+                    for (byte sample : frame) {
+                        if (sample != 0) {
+                            heard = true;
+                            log.info("audio signal=yes");
+                            break;
+                        }
+                    }
+                }
+                CustomAudioSource source = audioSource;
+                if (source != null) {
+                    source.pushAudio(frame.clone(), 16, AUDIO_RATE, AUDIO_CHANNELS, AUDIO_SAMPLES);
+                }
             }
         } catch (Exception ex) {
             if (pumping.get()) {
-                log.warn("capture {}", ex.toString());
+                log.warn("audio {}", ex.toString());
             }
+        }
+    }
+
+    private void readFfmpeg() {
+        int width = settings.width();
+        int height = settings.height();
+        int size = width * height * 3 / 2;
+        byte[] latest = new byte[size];
+        byte[] scratch = new byte[size];
+        byte[] newer = new byte[size];
+        Object frameLock = new Object();
+        AtomicBoolean hasFrame = new AtomicBoolean(false);
+        Thread grabber = Thread.ofPlatform().name("x11grab").start(() -> {
+            try (InputStream in = ffmpeg.getInputStream()) {
+                while (pumping.get()) {
+                    if (!readFully(in, scratch)) {
+                        break;
+                    }
+                    byte[] chosen = scratch;
+                    byte[] spare = newer;
+                    while (in.available() >= size && readFully(in, spare)) {
+                        chosen = spare;
+                        spare = chosen == scratch ? newer : scratch;
+                    }
+                    synchronized (frameLock) {
+                        System.arraycopy(chosen, 0, latest, 0, size);
+                        hasFrame.set(true);
+                    }
+                }
+            } catch (Exception ex) {
+                if (pumping.get()) {
+                    log.warn("x11grab {}", ex.toString());
+                }
+            }
+        });
+        long periodNs = 1_000_000_000L / Math.max(1, settings.fpsInt());
+        long nextPushNs = System.nanoTime() + periodNs;
+        try {
+            while (pumping.get()) {
+                long waitNs = nextPushNs - System.nanoTime();
+                if (waitNs > 0) {
+                    LockSupport.parkNanos(waitNs);
+                }
+                if (!hasFrame.get()) {
+                    continue;
+                }
+                byte[] pushCopy = new byte[size];
+                synchronized (frameLock) {
+                    System.arraycopy(latest, 0, pushCopy, 0, size);
+                }
+                pushI420(pushCopy, width, height);
+                nextPushNs += periodNs;
+                long behind = System.nanoTime() - nextPushNs;
+                if (behind > periodNs * 2L) {
+                    nextPushNs = System.nanoTime() + periodNs;
+                }
+            }
+        } finally {
+            grabber.interrupt();
+            try {
+                grabber.join(500);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private void tuneVideoSender() {
+        RTCPeerConnection connection;
+        synchronized (lock) {
+            connection = peer;
+        }
+        if (connection == null) {
+            return;
+        }
+        int bitrate = settings.videoBitrate();
+        int fps = settings.fpsInt();
+        for (RTCRtpSender sender : connection.getSenders()) {
+            MediaStreamTrack track = sender.getTrack();
+            if (track == null || !MediaStreamTrack.VIDEO_TRACK_KIND.equals(track.getKind())) {
+                continue;
+            }
+            RTCRtpSendParameters params = sender.getParameters();
+            if (params.encodings == null || params.encodings.isEmpty()) {
+                log.warn("video encode params unavailable");
+                return;
+            }
+            RTCRtpEncodingParameters enc = params.encodings.get(0);
+            enc.maxBitrate = bitrate;
+            enc.minBitrate = Math.min(400_000, Math.max(200_000, bitrate / 10));
+            enc.maxFramerate = (double) fps;
+            sender.setParameters(params);
+            log.info("video encode maxBitrate={} minBitrate={} maxFps={}", enc.maxBitrate, enc.minBitrate, fps);
+            return;
         }
     }
 
@@ -485,7 +747,13 @@ public class WebrtcMediaSession implements MediaSession {
         int chroma = width * height;
         copyPlane(raw, chroma, buffer.getDataU(), buffer.getStrideU(), width / 2, height / 2);
         copyPlane(raw, chroma + (width / 2) * (height / 2), buffer.getDataV(), buffer.getStrideV(), width / 2, height / 2);
-        VideoFrame frame = new VideoFrame(buffer, System.nanoTime());
+        long periodNs = 1_000_000_000L / Math.max(1, settings.fpsInt());
+        if (videoTimestampNs == 0) {
+            videoTimestampNs = System.nanoTime();
+        } else {
+            videoTimestampNs += periodNs;
+        }
+        VideoFrame frame = new VideoFrame(buffer, videoTimestampNs);
         source.pushFrame(frame);
         frame.release();
     }
@@ -539,9 +807,27 @@ public class WebrtcMediaSession implements MediaSession {
             ffmpeg.destroyForcibly();
             ffmpeg = null;
         }
+        if (audioProc != null) {
+            audioProc.destroyForcibly();
+            audioProc = null;
+        }
         if (pump != null) {
             pump.interrupt();
             pump = null;
+        }
+        if (audioPump != null) {
+            audioPump.interrupt();
+            try {
+                audioPump.join(500);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+            audioPump = null;
+        }
+        if (audioSource != null) {
+            CustomAudioSource source = audioSource;
+            audioSource = null;
+            disposeNative(source::dispose);
         }
         if (videoSource != null) {
             CustomVideoSource source = videoSource;
@@ -552,6 +838,11 @@ public class WebrtcMediaSession implements MediaSession {
             PeerConnectionFactory current = factory;
             factory = null;
             disposeNative(current::dispose);
+        }
+        if (audioDevices != null) {
+            AudioDeviceModule devices = audioDevices;
+            audioDevices = null;
+            disposeNative(devices::dispose);
         }
     }
 
@@ -564,16 +855,23 @@ public class WebrtcMediaSession implements MediaSession {
 
     private void closePeerLocked() {
         remoteReady = false;
+        answerSent = false;
         pendingRemote.clear();
+        pendingLocal.clear();
         VideoTrack track = videoTrack;
+        AudioTrack sound = audioTrack;
         RTCPeerConnection current = peer;
         videoTrack = null;
+        audioTrack = null;
         peer = null;
         if (current != null) {
             disposeNative(current::close);
         }
         if (track != null) {
             disposeNative(track::dispose);
+        }
+        if (sound != null) {
+            disposeNative(sound::dispose);
         }
     }
 

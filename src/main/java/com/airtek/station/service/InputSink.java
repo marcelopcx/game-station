@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import com.airtek.station.infrastructure.DatagramParser;
+import com.airtek.station.infrastructure.LookFeed;
 import com.airtek.station.infrastructure.UinputPad;
 import com.airtek.station.infrastructure.X11Injector;
 
@@ -23,10 +24,8 @@ import com.airtek.station.infrastructure.X11Injector;
  * reciente gana; el mouse relativo acumula dx/dy/rueda a lo largo de los
  * snapshots pendientes; el mouse absoluto pisa la posición.
  *
- * <p>Los pads se crean siempre, aunque {@code /dev/uinput} falle, para que
- * el slot del cliente no se corra. Teclado y mouse van a XTEST solo si el
- * manifiesto los pide. {@link #lastInputMillis()} alimenta el timeout de idle
- * (0 = todavía no hubo un datagrama válido).
+ * <p>Con {@code needs.relativeMouse}, el giro va a {@link LookFeed} (SDL);
+ * XTEST recibe botones, rueda y posición absoluta solo si no hay look relativo.
  */
 
 @Component
@@ -37,9 +36,13 @@ public class InputSink {
 
     private final StationProperties settings;
     private final List<UinputPad> pads = new ArrayList<>();
+    private final LookFeed look = new LookFeed();
     private X11Injector x11;
     private boolean keyboard;
     private boolean mouse;
+    private boolean relativeMouse;
+    private int lastAbsX = Integer.MIN_VALUE;
+    private int lastAbsY = Integer.MIN_VALUE;
     private int appliedSeq = -1;
     private volatile long lastInputMillis;
 
@@ -51,63 +54,53 @@ public class InputSink {
         return lastInputMillis;
     }
 
-    /**
-     * Crea un pad por cada slot pedido por {@code needs.gamepad} (tope 4) y,
-     * si el manifiesto pide teclado o ratón, el inyector XTEST del display
-     * configurado. Un {@code open} fallido del pad no saca el slot: el índice
-     * del cliente tiene que coincidir con el del kernel.
-     *
-     * @param manifest juego que acaba de pasar a {@code PLAYING}
-     */
     public void open(GameManifest manifest) {
         close();
         GameManifest.Needs needs = manifest.getNeeds();
         keyboard = needs.isKeyboard();
         mouse = needs.isMouse();
+        relativeMouse = needs.isRelativeMouse();
+        lastAbsX = Integer.MIN_VALUE;
+        lastAbsY = Integer.MIN_VALUE;
         int count = Math.max(0, Math.min(4, needs.getGamepad()));
         for (int i = 0; i < count; i++) {
             UinputPad pad = new UinputPad(i);
             pad.open();
             pads.add(pad);
         }
+        if (relativeMouse) {
+            look.open();
+        }
         if (keyboard || mouse) {
             x11 = new X11Injector(settings.getDisplay(), settings.width(), settings.height());
         }
         log.info(
-                "input open protocol=udp-latest pads={} keyboard={} mouse={} display={}",
-                count, keyboard, mouse, settings.getDisplay()
+                "input open protocol=udp-latest pads={} keyboard={} mouse={} relativeMouse={} display={}",
+                count, keyboard, mouse, relativeMouse, settings.getDisplay()
         );
     }
 
-    /**
-     * Suelta los botones, cierra los fd de uinput y la conexión X. Deja el
-     * sink listo para otro {@link #open}.
-     */
     public void close() {
         for (UinputPad pad : pads) {
             pad.apply(0, REST);
             pad.close();
         }
         pads.clear();
+        look.close();
         if (x11 != null) {
             x11.close();
             x11 = null;
         }
         keyboard = false;
         mouse = false;
+        relativeMouse = false;
+        lastAbsX = Integer.MIN_VALUE;
+        lastAbsY = Integer.MIN_VALUE;
         appliedSeq = -1;
+        lastInputMillis = 0;
     }
 
-    /**
-     * Aplica el snapshot más nuevo del datagrama si su {@code seq} avanza.
-     * dx, dy y la rueda de los snapshots relativos pendientes se suman; la
-     * rueda de los absolutos pendientes también. Posición absoluta, botones,
-     * teclas y pads salen solo del último. Un buffer que no parsea se
-     * loguea y se ignora.
-     *
-     * @param data payload binario del DataChannel {@code input}
-     */
-    public void handle(byte[] data) {
+    public synchronized void handle(byte[] data) {
         List<DatagramParser.Snapshot> snaps = DatagramParser.parse(data);
         if (snaps == null || snaps.isEmpty()) {
             log.warn("input: datagrama inválido len={}", data == null ? 0 : data.length);
@@ -145,8 +138,30 @@ public class InputSink {
                 wheel += snap.mouseAbs() ? snap.wheel() : 0;
             }
         }
+        if (relativeMouse) {
+            int prevX = lastAbsX;
+            int prevY = lastAbsY;
+            for (DatagramParser.Snapshot snap : pending) {
+                if (!snap.hasMouse() || !snap.mouseAbs()) {
+                    continue;
+                }
+                if (prevX != Integer.MIN_VALUE) {
+                    relX += snap.mouseX() - prevX;
+                    relY += snap.mouseY() - prevY;
+                }
+                prevX = snap.mouseX();
+                prevY = snap.mouseY();
+            }
+            if (prevX != Integer.MIN_VALUE) {
+                lastAbsX = prevX;
+                lastAbsY = prevY;
+            }
+        }
         appliedSeq = latest.seq();
         lastInputMillis = System.currentTimeMillis();
+        if (mouse && relativeMouse) {
+            look.add(relX, relY);
+        }
         if (latest.hasPads()) {
             applyPads(latest.pads());
         }
@@ -155,7 +170,7 @@ public class InputSink {
             Integer buttons = null;
             Set<Integer> keys = null;
             if (mouse && latest.hasMouse()) {
-                if (latest.mouseAbs()) {
+                if (latest.mouseAbs() && !relativeMouse) {
                     abs = new int[]{latest.mouseX(), latest.mouseY()};
                 }
                 buttons = latest.mouseButtons();
@@ -163,10 +178,12 @@ public class InputSink {
             if (keyboard && latest.hasKeyboard()) {
                 keys = latest.keys();
             }
+            int xRel = mouse && !relativeMouse ? relX : 0;
+            int yRel = mouse && !relativeMouse ? relY : 0;
             x11.inject(
                     abs,
-                    mouse ? relX : 0,
-                    mouse ? relY : 0,
+                    xRel,
+                    yRel,
                     mouse ? wheel : 0,
                     buttons,
                     keys

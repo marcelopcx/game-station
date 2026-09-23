@@ -5,7 +5,8 @@ station:
   id: ${STATION_ID:spark-1}
   display: ${STATION_DISPLAY::99}
   size: ${STATION_SIZE:1280x720}
-  fps: ${STATION_FPS:30}
+  fps: ${STATION_FPS:60}
+  video-bitrate: ${STATION_VIDEO_BITRATE:5000000}
   library-root: ${LIBRARY_ROOT:/opt/station-library}
   cache-root: ${CACHE_ROOT:/tmp/airtek-cache}
   idle-timeout-s: ${IDLE_TIMEOUT_S:300}

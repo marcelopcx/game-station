@@ -121,6 +121,7 @@ public class GameManifest {
         private int gamepad;
         private boolean keyboard;
         private boolean mouse;
+        private boolean relativeMouse;
 
         public boolean isDisplay() {
             return display;
@@ -169,6 +170,14 @@ public class GameManifest {
             this.mouse = mouse;
         }
 
+        public boolean isRelativeMouse() {
+            return relativeMouse;
+        }
+
+        public void setRelativeMouse(boolean relativeMouse) {
+            this.relativeMouse = relativeMouse;
+        }
+
         public Map<String, Object> toWire() {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("display", display);
@@ -176,6 +185,7 @@ public class GameManifest {
             body.put("gamepad", gamepad);
             body.put("keyboard", keyboard);
             body.put("mouse", mouse);
+            body.put("relativeMouse", relativeMouse);
             return body;
         }
     }

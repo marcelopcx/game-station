@@ -11,7 +11,8 @@ public class StationProperties {
     private String id = "spark-1";
     private String display = ":99";
     private String size = "1280x720";
-    private String fps = "30";
+    private String fps = "60";
+    private String videoBitrate = "5000000";
     private String libraryRoot = "/opt/station-library";
     private String cacheRoot = "/tmp/airtek-cache";
     private double idleTimeoutS = 300;
@@ -40,9 +41,18 @@ public class StationProperties {
     public int fpsInt() {
         try {
             int n = Integer.parseInt(fps.trim());
-            return n > 0 ? n : 30;
+            return n > 0 ? n : 60;
         } catch (NumberFormatException ex) {
-            return 30;
+            return 60;
+        }
+    }
+
+    public int videoBitrate() {
+        try {
+            int n = Integer.parseInt(videoBitrate.trim());
+            return n > 0 ? n : 5_000_000;
+        } catch (NumberFormatException ex) {
+            return 5_000_000;
         }
     }
 
@@ -109,6 +119,14 @@ public class StationProperties {
 
     public void setFps(String fps) {
         this.fps = fps;
+    }
+
+    public String getVideoBitrate() {
+        return videoBitrate;
+    }
+
+    public void setVideoBitrate(String videoBitrate) {
+        this.videoBitrate = videoBitrate;
     }
 
     public String getLibraryRoot() {

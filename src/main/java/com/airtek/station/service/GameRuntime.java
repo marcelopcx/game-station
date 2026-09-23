@@ -2,6 +2,7 @@ package com.airtek.station.service;
 
 import com.airtek.station.model.GameManifest;
 import com.airtek.station.config.StationProperties;
+import com.airtek.station.infrastructure.LookFeed;
 import com.airtek.station.infrastructure.SdlMapping;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,17 +18,8 @@ import com.airtek.station.infrastructure.ProcessGroup;
 /**
  * Orquesta display virtual y proceso del juego según el manifiesto.
  *
- * <p>{@link #start(String)} con {@code test-pattern} no hace exec. Con un
- * juego nativo levanta Xvfb ({@code -screen 0 ${SIZE}x24}, GLX, XTEST) en
- * {@code station.display}, espera 400 ms y hace spawn del argv interpolado.
- * El entorno hereda el del JVM y fuerza {@code DISPLAY}, vsync apagado y,
- * si {@code needs.gamepad > 0}, {@code SDL_GAMECONTROLLERCONFIG} con el
- * mapping del pad virtual.
- *
- * <p>{@link #stop()} mata el árbol de procesos (Xvfb y el juego) con
- * {@link com.airtek.station.infrastructure.ProcessGroup}. No mata la JVM.
- * Pulse no se supervisa en este corte: {@code needs.audio} no añade un
- * daemon; si el juego lo necesita, el manifiesto trae {@code fallbackArgs}.
+ * <p>Con un juego nativo levanta Xvfb ({@code -screen 0 ${SIZE}x24}, GLX, XTEST),
+ * espera 400 ms y hace spawn con {@code LD_PRELOAD=libgameinput.so} para look SDL.
  */
 
 @Component
@@ -57,14 +49,6 @@ public class GameRuntime {
         return active != null && active.getNeeds().isDisplay() && !active.testPattern();
     }
 
-    /**
-     * Arranca el juego del catálogo. Un argv vacío (test-pattern) no crea
-     * display. El camino nativo hace spawn de Xvfb, espera 400 ms y lanza
-     * el binario con {@code DISPLAY} y, si hay pads, {@code SDL_GAMECONTROLLERCONFIG}.
-     *
-     * @param gameId id ya aceptado por {@link GameCatalog#require}
-     * @throws IllegalStateException si Xvfb o el juego no arrancan; el árbol queda parado
-     */
     public void start(String gameId) {
         GameManifest manifest = catalog.require(gameId);
         active = manifest;
@@ -95,9 +79,6 @@ public class GameRuntime {
         }
     }
 
-    /**
-     * Mata Xvfb y el juego (SIGTERM, 3 s, luego SIGKILL) y olvida el manifiesto activo.
-     */
     public void stop() {
         processes.stop();
         active = null;
@@ -140,6 +121,16 @@ public class GameRuntime {
         if (manifest.getNeeds().getGamepad() > 0) {
             env.putIfAbsent("SDL_GAMECONTROLLERCONFIG", SdlMapping.config(manifest.getNeeds().getGamepad()));
         }
+        env.putIfAbsent("SDL_MOUSE_RELATIVE_MODE_WARP", "1");
+        env.putIfAbsent("SDL_VIDEO_X11_DGAMOUSE", "0");
+        String preload = "/usr/local/lib/libgameinput.so";
+        String existing = env.get("LD_PRELOAD");
+        if (existing == null || existing.isBlank()) {
+            env.put("LD_PRELOAD", preload);
+        } else if (!existing.contains("libgameinput.so")) {
+            env.put("LD_PRELOAD", preload + ":" + existing);
+        }
+        LookFeed.prepare();
         processes.spawn(argv, env, manifest.getId(), manifest.getWorkdir());
     }
 }
