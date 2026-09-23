@@ -65,7 +65,16 @@ public class StationProperties {
     }
 
     public List<String> iceHostIpList() {
-        return split(iceHostIps);
+        return split(iceHostIps).stream().map(StationProperties::normalizeIceHostIp).toList();
+    }
+
+    /** Quita basura tipo {@code 156.255.130.66/} que rompe el match de candidatos host. */
+    private static String normalizeIceHostIp(String ip) {
+        String trimmed = ip.trim();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
     }
 
     public String interpolate(String value) {

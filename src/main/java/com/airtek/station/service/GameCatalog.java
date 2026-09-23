@@ -36,6 +36,19 @@ public class GameCatalog {
 
     public GameCatalog(StationProperties properties) {
         this.manifest = load(properties.getGameManifest());
+        var hostIps = properties.iceHostIpList();
+        log.info(
+                "ice policy={} hostIps={} stun={}",
+                properties.getIceHostPolicy(),
+                hostIps.isEmpty() ? "(auto)" : hostIps,
+                properties.iceServerList()
+        );
+        if (hostIps.isEmpty() && "public".equalsIgnoreCase(properties.getIceHostPolicy())) {
+            log.warn(
+                    "ICE_HOST_POLICY=public sin ICE_HOST_IPS: en LAN suele fallar ICE; "
+                            + "usá ICE_HOST_POLICY=all o ICE_HOST_IPS=<IP que ve el browser>"
+            );
+        }
     }
 
     public GameManifest manifest() {

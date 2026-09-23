@@ -136,7 +136,7 @@ public class GameRuntime {
         }
         LookFeed.prepare();
         processes.spawn(argv, env, manifest.getId(), manifest.getWorkdir());
-        if (manifest.getNeeds().isRelativeMouse()) {
+        if (manifest.getNeeds().isRelativeMouse() || manifest.getNeeds().isKeyboard()) {
             Map<String, String> focusEnv = new HashMap<>(env);
             focusEnv.put("DISPLAY", settings.getDisplay());
             processes.spawn(
