@@ -49,6 +49,7 @@ public class InputSink {
     private volatile long lastInputMillis;
     private boolean loggedKeys;
     private boolean loggedMouseButtons;
+    private boolean loggedMouseMotion;
     private volatile boolean stopWorkers;
 
     private Thread padThread;
@@ -138,6 +139,7 @@ public class InputSink {
         lastInputMillis = 0;
         loggedKeys = false;
         loggedMouseButtons = false;
+        loggedMouseMotion = false;
         resetJobs();
     }
 
@@ -201,6 +203,10 @@ public class InputSink {
                 lastAbsY = prevY;
             }
             look.add(lookX, lookY);
+            if (!loggedMouseMotion && (lookX != 0 || lookY != 0)) {
+                loggedMouseMotion = true;
+                log.info("input mouse motion look dx={} dy={}", lookX, lookY);
+            }
         }
         lock.lock();
         try {
@@ -221,7 +227,10 @@ public class InputSink {
                 if (latest.mouseAbs() && !relativeMouse) {
                     absJob = new int[]{latest.mouseX(), latest.mouseY()};
                 }
-                if (!relativeMouse) {
+                if (relativeMouse) {
+                    relXJob += lookX;
+                    relYJob += lookY;
+                } else {
                     relXJob += relX;
                     relYJob += relY;
                 }
@@ -322,9 +331,9 @@ public class InputSink {
                 continue;
             }
             injector.inject(
-                    mouse ? abs : null,
-                    mouse && !relativeMouse ? relX : 0,
-                    mouse && !relativeMouse ? relY : 0,
+                    mouse && !relativeMouse ? abs : null,
+                    mouse ? relX : 0,
+                    mouse ? relY : 0,
                     mouse ? wheel : 0,
                     mouse ? buttons : null,
                     keyboard ? keys : null
