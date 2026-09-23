@@ -5,8 +5,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -21,11 +19,9 @@ public final class LookFeed {
 
     private static final Logger log = LoggerFactory.getLogger(LookFeed.class);
     private static final Path FILE = Path.of("/tmp/game-input");
-    /** Índices en la vista {@code int[]} del buffer (bytes 4 y 8). */
-    private static final int DX_IDX = 1;
-    private static final int DY_IDX = 2;
-    private static final VarHandle INTS =
-            MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.LITTLE_ENDIAN);
+    /** Offsets en bytes (struct Look: lock@0, dx@4, dy@8). */
+    private static final int DX_OFF = 4;
+    private static final int DY_OFF = 8;
 
     private MappedByteBuffer buffer;
     private boolean logged;
@@ -48,8 +44,8 @@ public final class LookFeed {
         try (RandomAccessFile file = new RandomAccessFile(FILE.toFile(), "rw")) {
             buffer = file.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, 4096);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
-            buffer.putInt(4, 0);
-            buffer.putInt(8, 0);
+            buffer.putInt(DX_OFF, 0);
+            buffer.putInt(DY_OFF, 0);
             log.info("look feed=sdl path={}", FILE);
         } catch (IOException ex) {
             buffer = null;
@@ -62,8 +58,8 @@ public final class LookFeed {
         if (page == null || (dx == 0 && dy == 0)) {
             return;
         }
-        INTS.getAndAdd(page, DX_IDX, dx);
-        INTS.getAndAdd(page, DY_IDX, dy);
+        page.putInt(DX_OFF, page.getInt(DX_OFF) + dx);
+        page.putInt(DY_OFF, page.getInt(DY_OFF) + dy);
         if (!logged) {
             logged = true;
             log.info("look motion dx={} dy={}", dx, dy);
