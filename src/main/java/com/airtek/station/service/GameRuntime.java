@@ -45,6 +45,10 @@ public class GameRuntime {
         return active;
     }
 
+    public GameManifest manifestFor(String gameId) {
+        return catalog.require(gameId);
+    }
+
     public boolean capturesDisplay() {
         return active != null && active.getNeeds().isDisplay() && !active.testPattern();
     }

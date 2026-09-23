@@ -137,8 +137,8 @@ public class WebrtcMediaSession implements MediaSession {
     public void startSource(String gameId) {
         closePeer();
         stopMedia();
+        input.open(runtime.manifestFor(gameId));
         runtime.start(gameId);
-        input.open(runtime.active());
         audioDevices = new AudioDeviceModule(AudioLayer.kDummyAudio);
         factory = new PeerConnectionFactory(factoryFieldTrials(), audioDevices);
         videoSource = new CustomVideoSource();
