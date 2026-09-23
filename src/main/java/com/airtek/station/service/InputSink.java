@@ -43,9 +43,12 @@ public class InputSink {
     private boolean keyboard;
     private boolean mouse;
     private boolean relativeMouse;
+    private int lastAbsX = Integer.MIN_VALUE;
+    private int lastAbsY = Integer.MIN_VALUE;
     private int appliedSeq = -1;
     private volatile long lastInputMillis;
     private boolean loggedKeys;
+    private boolean loggedMouseButtons;
     private volatile boolean stopWorkers;
 
     private Thread padThread;
@@ -75,6 +78,8 @@ public class InputSink {
         keyboard = needs.isKeyboard();
         mouse = needs.isMouse();
         relativeMouse = needs.isRelativeMouse();
+        lastAbsX = Integer.MIN_VALUE;
+        lastAbsY = Integer.MIN_VALUE;
         int count = Math.max(0, Math.min(4, needs.getGamepad()));
         for (int i = 0; i < count; i++) {
             UinputPad pad = new UinputPad(i);
@@ -127,9 +132,12 @@ public class InputSink {
         keyboard = false;
         mouse = false;
         relativeMouse = false;
+        lastAbsX = Integer.MIN_VALUE;
+        lastAbsY = Integer.MIN_VALUE;
         appliedSeq = -1;
         lastInputMillis = 0;
         loggedKeys = false;
+        loggedMouseButtons = false;
         resetJobs();
     }
 
@@ -158,6 +166,8 @@ public class InputSink {
         int relX = 0;
         int relY = 0;
         int wheel = 0;
+        int lookX = 0;
+        int lookY = 0;
         for (DatagramParser.Snapshot snap : pending) {
             if (!snap.hasMouse()) {
                 continue;
@@ -165,11 +175,32 @@ public class InputSink {
             if (!snap.mouseAbs()) {
                 relX += snap.mouseX();
                 relY += snap.mouseY();
+                lookX += snap.mouseX();
+                lookY += snap.mouseY();
             }
             wheel += snap.wheel();
         }
         if (mouse && relativeMouse) {
-            look.add(relX, relY);
+            int prevX = lastAbsX;
+            int prevY = lastAbsY;
+            for (DatagramParser.Snapshot snap : pending) {
+                if (!snap.hasMouse() || !snap.mouseAbs()) {
+                    continue;
+                }
+                if (prevX != Integer.MIN_VALUE) {
+                    int dx = snap.mouseX() - prevX;
+                    int dy = snap.mouseY() - prevY;
+                    lookX += dx;
+                    lookY += dy;
+                }
+                prevX = snap.mouseX();
+                prevY = snap.mouseY();
+            }
+            if (prevX != Integer.MIN_VALUE) {
+                lastAbsX = prevX;
+                lastAbsY = prevY;
+            }
+            look.add(lookX, lookY);
         }
         lock.lock();
         try {
@@ -196,6 +227,10 @@ public class InputSink {
                 }
                 wheelJob += wheel;
                 buttonsJob = latest.mouseButtons();
+                if (!loggedMouseButtons && buttonsJob != null && buttonsJob != 0) {
+                    loggedMouseButtons = true;
+                    log.info("input mouse buttons mask={}", buttonsJob);
+                }
                 x11Dirty = true;
             }
             cond.signalAll();

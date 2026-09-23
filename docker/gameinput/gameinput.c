@@ -55,19 +55,21 @@ static void take(int *dx, int *dy) {
 static uint32_t relative_state(int *x, int *y) {
     int dx = 0;
     int dy = 0;
+    int rx = 0;
+    int ry = 0;
     uint32_t buttons = 0;
     if (!real_relative) {
         real_relative = dlsym(RTLD_NEXT, "SDL_GetRelativeMouseState");
     }
     if (real_relative) {
-        buttons = real_relative(x, y);
+        buttons = real_relative(&rx, &ry);
     }
     take(&dx, &dy);
     if (x) {
-        *x = dx;
+        *x = rx + dx;
     }
     if (y) {
-        *y = dy;
+        *y = ry + dy;
     }
     return buttons;
 }
