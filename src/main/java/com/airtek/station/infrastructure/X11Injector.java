@@ -39,6 +39,9 @@ public final class X11Injector {
     private int buttons;
     private int absX = Integer.MIN_VALUE;
     private int absY = Integer.MIN_VALUE;
+    private long gameWindow;
+    private long lastFocusMillis;
+    private boolean loggedFocus;
 
     public X11Injector(String display, int width, int height) {
         this.display = display;
@@ -100,6 +103,7 @@ public final class X11Injector {
         if (displayPtr == null) {
             return;
         }
+        ensureGameFocus(displayPtr);
         boolean wrote = false;
         if (abs != null) {
             int x = Math.max(0, Math.min(width - 1, abs[0]));
@@ -175,8 +179,30 @@ public final class X11Injector {
                 return null;
             }
             log.info("input_backend=xtest display={}", display);
+            gameWindow = X11Focus.findGameWindow(dpy);
+            if (gameWindow != 0 && !loggedFocus) {
+                loggedFocus = true;
+                log.info("input focus window=0x{}", Long.toHexString(gameWindow));
+            }
         }
         return dpy;
+    }
+
+    private void ensureGameFocus(Pointer displayPtr) {
+        long now = System.currentTimeMillis();
+        if (gameWindow == 0 || now - lastFocusMillis > 400) {
+            if (gameWindow == 0) {
+                gameWindow = X11Focus.findGameWindow(displayPtr);
+                if (gameWindow != 0 && !loggedFocus) {
+                    loggedFocus = true;
+                    log.info("input focus window=0x{}", Long.toHexString(gameWindow));
+                }
+            }
+            if (gameWindow != 0) {
+                X11Focus.raiseAndFocus(displayPtr, gameWindow);
+                lastFocusMillis = now;
+            }
+        }
     }
 
     private static Integer domButton(int dom) {

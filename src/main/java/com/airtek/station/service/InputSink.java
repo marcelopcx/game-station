@@ -45,6 +45,7 @@ public class InputSink {
     private int lastAbsY = Integer.MIN_VALUE;
     private int appliedSeq = -1;
     private volatile long lastInputMillis;
+    private boolean loggedKeys;
 
     public InputSink(StationProperties settings) {
         this.settings = settings;
@@ -98,6 +99,7 @@ public class InputSink {
         lastAbsY = Integer.MIN_VALUE;
         appliedSeq = -1;
         lastInputMillis = 0;
+        loggedKeys = false;
     }
 
     public synchronized void handle(byte[] data) {
@@ -177,6 +179,10 @@ public class InputSink {
             }
             if (keyboard && latest.hasKeyboard()) {
                 keys = latest.keys();
+                if (!loggedKeys && keys != null && !keys.isEmpty()) {
+                    loggedKeys = true;
+                    log.info("input keys first count={} codes={}", keys.size(), keys);
+                }
             }
             int xRel = mouse && !relativeMouse ? relX : 0;
             int yRel = mouse && !relativeMouse ? relY : 0;
