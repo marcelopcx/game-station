@@ -203,9 +203,9 @@ public class InputSink {
                 lastAbsY = prevY;
             }
             look.add(lookX, lookY);
-            if (!loggedMouseMotion && (lookX != 0 || lookY != 0)) {
+            if (!loggedMouseMotion && (relX != 0 || relY != 0)) {
                 loggedMouseMotion = true;
-                log.info("input mouse motion look dx={} dy={}", lookX, lookY);
+                log.info("input mouse motion look dx={} dy={} (rel batch={},{})", lookX, lookY, relX, relY);
             }
         } else if (mouse && !loggedMouseMotion && (relX != 0 || relY != 0)) {
             loggedMouseMotion = true;
@@ -231,8 +231,8 @@ public class InputSink {
                     absJob = new int[]{latest.mouseX(), latest.mouseY()};
                 }
                 if (relativeMouse) {
-                    relXJob += lookX;
-                    relYJob += lookY;
+                    relXJob += relX;
+                    relYJob += relY;
                 } else {
                     relXJob += relX;
                     relYJob += relY;
