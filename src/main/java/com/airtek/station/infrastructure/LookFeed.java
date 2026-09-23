@@ -28,6 +28,7 @@ public final class LookFeed {
             MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.LITTLE_ENDIAN);
 
     private MappedByteBuffer buffer;
+    private boolean logged;
 
     /** Crea el archivo antes de que arranque el juego, para que la biblioteca lo encuentre. */
     public static void prepare() {
@@ -63,9 +64,14 @@ public final class LookFeed {
         }
         INTS.getAndAdd(page, DX_IDX, dx);
         INTS.getAndAdd(page, DY_IDX, dy);
+        if (!logged) {
+            logged = true;
+            log.info("look motion dx={} dy={}", dx, dy);
+        }
     }
 
     public void close() {
         buffer = null;
+        logged = false;
     }
 }

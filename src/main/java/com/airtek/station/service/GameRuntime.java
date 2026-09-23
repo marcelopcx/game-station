@@ -132,5 +132,15 @@ public class GameRuntime {
         }
         LookFeed.prepare();
         processes.spawn(argv, env, manifest.getId(), manifest.getWorkdir());
+        if (manifest.getNeeds().isRelativeMouse()) {
+            Map<String, String> focusEnv = new HashMap<>(env);
+            focusEnv.put("DISPLAY", settings.getDisplay());
+            processes.spawn(
+                    List.of("sh", "-c", "sleep 2; exec xfocus-game " + settings.getDisplay()),
+                    focusEnv,
+                    "xfocus",
+                    null
+            );
+        }
     }
 }
