@@ -136,7 +136,7 @@ public class GameRuntime {
             Map<String, String> focusEnv = new HashMap<>(env);
             focusEnv.put("DISPLAY", settings.getDisplay());
             processes.spawn(
-                    List.of("sh", "-c", "sleep 2; exec xfocus-game " + settings.getDisplay()),
+                    List.of("sh", "-c", "sleep 2; exec xfocus-game " + settings.getDisplay() + " 400"),
                     focusEnv,
                     "xfocus",
                     null

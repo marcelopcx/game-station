@@ -60,6 +60,7 @@ public final class LookFeed {
         }
         page.putInt(DX_OFF, page.getInt(DX_OFF) + dx);
         page.putInt(DY_OFF, page.getInt(DY_OFF) + dy);
+        page.force();
         if (!logged) {
             logged = true;
             log.info("look motion dx={} dy={}", dx, dy);
